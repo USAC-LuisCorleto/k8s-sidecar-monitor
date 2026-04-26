@@ -1,0 +1,32 @@
+# Material academico y evidencias locales (NO se sube al repositorio publico)
+# Estas carpetas contienen documentacion de la tesis, capturas de pantalla
+# y bitacoras de implementacion que son personales y no forman parte del
+# artefacto tecnico publicado.
+docs/
+evidence/
+history/
+
+# Dependencias de Node.js (se instalan localmente, no se versionan)
+node_modules/
+package-lock.json
+
+# Archivos de entorno (pueden contener credenciales o configuraciones locales)
+.env
+.env.local
+
+# Archivos de logs generados automaticamente
+*.log
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Directorios de build/dist de TypeScript
+dist/
+build/
+
+# Archivos de IDE/editores
+.vscode/
+.idea/
+*.swp
+*.swo
