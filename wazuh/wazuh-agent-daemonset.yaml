@@ -1,0 +1,80 @@
+# Wazuh Agent DaemonSet para Kubernetes
+# Despliega un agente Wazuh en cada nodo del cluster para recolectar logs
+# Documentacion: https://documentation.wazuh.com/current/deployment-options/deploying-with-kubernetes/index.html
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: wazuh-agent
+  namespace: default
+  labels:
+    app: wazuh-agent
+spec:
+  selector:
+    matchLabels:
+      app: wazuh-agent
+  template:
+    metadata:
+      labels:
+        app: wazuh-agent
+    spec:
+      # Necesita privilegios para leer logs del sistema y del host
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: wazuh-agent
+          image: wazuh/wazuh-agent:4.9.0
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            # Direccion del Wazuh Manager (tu maquina host desde la perspectiva del contenedor)
+            # En Docker Desktop, el host se accede via 'host.docker.internal'
+            # Pero desde Kind, usamos la IP del host o el nombre del contenedor si estan en la misma red
+            - name: WAZUH_MANAGER
+              value: "host.docker.internal"
+            # Nombre del grupo de agentes (para organizacion en el dashboard)
+            - name: WAZUH_AGENT_GROUP
+              value: "kubernetes-cluster"
+            # Nombre del agente (usamos el nombre del nodo)
+            - name: WAZUH_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            # Logs de Kubernetes (donde se persisten los logs de los Pods)
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            # Logs de containers de containerd (usado por Kind)
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            # Logs del sistema operativo del nodo
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            # Directorio raiz del host (para acceso completo si es necesario)
+            - name: host-root
+              mountPath: /host
+              readOnly: true
+            # Socket de Docker (para obtener metadata de contenedores)
+            - name: dockersocket
+              mountPath: /var/run/docker.sock
+              readOnly: true
+      volumes:
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: host-root
+          hostPath:
+            path: /
+        - name: dockersocket
+          hostPath:
+            path: /var/run/docker.sock

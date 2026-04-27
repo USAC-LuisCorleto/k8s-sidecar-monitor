@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: default
+  labels:
+    app: fluent-bit
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1
+          ports:
+            - containerPort: 2020
+              protocol: TCP
+              name: http-metrics
+          volumeMounts:
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/fluent-bit.conf
+              subPath: fluent-bit.conf
+            - name: fluent-bit-parsers
+              mountPath: /fluent-bit/etc/parsers.conf
+              subPath: parsers.conf
+      volumes:
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config
+        - name: fluent-bit-parsers
+          configMap:
+            name: fluent-bit-config
