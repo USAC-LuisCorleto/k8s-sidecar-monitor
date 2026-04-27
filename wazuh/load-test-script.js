@@ -1,0 +1,67 @@
+const http = require('http');
+
+const TARGET = process.env.TARGET || 'http://service-a:8080/health';
+const DURATION_MS = parseInt(process.env.DURATION_MS || '10000');
+const CONCURRENCY = parseInt(process.env.CONCURRENCY || '10');
+
+const results = [];
+let errors = 0;
+let totalRequests = 0;
+const startTime = Date.now();
+
+function makeRequest() {
+  return new Promise((resolve) => {
+    const reqStart = Date.now();
+    const req = http.get(TARGET, (res) => {
+      const latency = Date.now() - reqStart;
+      results.push(latency);
+      totalRequests++;
+      res.resume();
+      resolve();
+    }).on('error', () => {
+      errors++;
+      totalRequests++;
+      resolve();
+    });
+  });
+}
+
+async function run() {
+  const workers = [];
+  
+  for (let i = 0; i < CONCURRENCY; i++) {
+    workers.push((async () => {
+      while (Date.now() - startTime < DURATION_MS) {
+        await makeRequest();
+      }
+    })());
+  }
+  
+  await Promise.all(workers);
+  
+  results.sort((a, b) => a - b);
+  const avg = results.reduce((a, b) => a + b, 0) / results.length;
+  const p50 = results[Math.floor(results.length * 0.5)];
+  const p95 = results[Math.floor(results.length * 0.95)];
+  const p99 = results[Math.floor(results.length * 0.99)];
+  const throughput = Math.round(totalRequests / (DURATION_MS / 1000));
+  
+  console.log(JSON.stringify({
+    target: TARGET,
+    duration_ms: DURATION_MS,
+    concurrency: CONCURRENCY,
+    totalRequests,
+    errors,
+    throughput_rps: throughput,
+    latency_ms: {
+      avg: Math.round(avg * 100) / 100,
+      p50,
+      p95,
+      p99,
+      min: results[0],
+      max: results[results.length - 1]
+    }
+  }, null, 2));
+}
+
+run();

@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-test-medium
+  namespace: default
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: load-test
+          image: node:20-alpine
+          command: ["node", "/scripts/load-test.js"]
+          env:
+            - name: CONCURRENCY
+              value: "50"
+            - name: DURATION_MS
+              value: "20000"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: load-test-script
+  backoffLimit: 0
