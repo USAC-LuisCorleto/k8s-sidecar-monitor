@@ -1,4 +1,5 @@
 const { spawnSync } = require('child_process');
+const chalk = require('chalk');
 const { banner, success, error, info, warn, divider } = require('./lib/colors');
 const ora = require('ora');
 

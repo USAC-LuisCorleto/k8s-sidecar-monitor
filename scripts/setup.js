@@ -1,8 +1,16 @@
 const { spawnSync } = require('child_process');
+const chalk = require('chalk');
 const { banner, success, error, info, warn, step, divider } = require('./lib/colors');
 const { checkDocker, checkKindCluster, checkKubectlContext, checkPods, checkWazuh, checkFluentBit } = require('./lib/checks');
 const ora = require('ora');
 const { Confirm } = require('enquirer');
+
+const NON_INTERACTIVE = process.env.NON_INTERACTIVE === '1';
+const autoConfirm = async (defaultValue = false) => {
+  if (NON_INTERACTIVE) return defaultValue;
+  const c = new Confirm({ message: '', initial: defaultValue });
+  return c.run();
+};
 
 const run = (cmd, args = [], opts = {}) => {
   const result = spawnSync(cmd, args, { encoding: 'utf-8', shell: true, stdio: 'pipe', ...opts });
@@ -86,12 +94,8 @@ const setup = async () => {
   const imgB = run('docker', ['images', '-q', 'service-b:latest']);
   if (imgA && imgB) {
     warn('Imagenes service-a:latest y service-b:latest ya existen localmente.');
-    const forceRebuild = new Confirm({
-      name: 'rebuild',
-      message: '  ¿Desea reconstruirlas de todos modos?',
-      initial: false
-    });
-    if (await forceRebuild.run()) {
+    const forceRebuild = await autoConfirm(false);
+    if (forceRebuild) {
       const spinner4 = ora('  Reconstruyendo imagenes...').start();
       runWithOutput('docker', ['build', '-t', 'service-a:latest', '../src/service-a']);
       runWithOutput('docker', ['build', '-t', 'service-b:latest', '../src/service-b']);
