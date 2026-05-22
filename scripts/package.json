@@ -1,0 +1,15 @@
+{
+  "name": "k8s-sidecar-monitor-scripts",
+  "version": "1.0.0",
+  "description": "TUI scripts for lab lifecycle management",
+  "scripts": {
+    "start": "node tui.js",
+    "cleanup": "node cleanup.js",
+    "setup": "node setup.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "enquirer": "^2.4.1",
+    "ora": "^5.4.1"
+  }
+}
