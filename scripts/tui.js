@@ -1,16 +1,46 @@
 const chalk = require('chalk');
 const { Select } = require('enquirer');
 const { banner, success, info, divider } = require('./lib/colors');
+const { getFullStatus } = require('./lib/checks');
 const { spawnSync } = require('child_process');
 
 const run = (cmd, args = []) => {
   spawnSync(cmd, args, { encoding: 'utf-8', shell: true, stdio: 'inherit' });
 };
 
+const printStatus = () => {
+  const s = getFullStatus();
+  console.log(chalk.blue.bold('\n  Estado del entorno:\n'));
+
+  const fmt = (label, check) => {
+    const icon = check.ok ? chalk.green('●') : chalk.red('●');
+    const color = check.ok ? chalk.green : chalk.gray;
+    console.log(`  ${icon}  ${label.padEnd(20)} ${color(check.msg)}`);
+  };
+
+  fmt('Docker', s.docker);
+  fmt('Kind Cluster', s.kind);
+  fmt('kubectl Context', s.kubectl);
+  fmt('Microservicios', s.pods);
+  fmt('Wazuh Manager', s.wazuh);
+  fmt('Fluent Bit', s.fluentbit);
+  console.log('');
+
+  const allOk = s.docker.ok && s.kind.ok && s.pods.ok && s.wazuh.ok && s.fluentbit.ok;
+  if (allOk) {
+    success('Todo el laboratorio esta levantado y operativo.\n');
+  } else if (s.kind.ok && s.pods.ok && !s.wazuh.ok) {
+    warn('El cluster Kubernetes esta listo. Falta Wazuh Manager (o aun no inicia).\n');
+  } else if (!s.kind.ok) {
+    info('El cluster no existe. Ejecute "Levantar laboratorio completo" para iniciar.\n');
+  }
+};
+
 const main = async () => {
   banner();
   console.log(chalk.white('  Bienvenido al gestor del laboratorio de monitoreo con Sidecar.\n'));
-  info('Seleccione una opcion del menu para continuar.\n');
+
+  printStatus();
 
   const menu = new Select({
     name: 'action',
@@ -38,17 +68,7 @@ const main = async () => {
       run('node', ['cleanup.js']);
       break;
     case 'check':
-      console.log(chalk.blue.bold('\n  Estado del entorno:\n'));
-      console.log(chalk.gray('  ── Docker ──'));
-      spawnSync('docker', ['ps', '--format', 'table {{.Names}}\t{{.Status}}'], { shell: true, stdio: 'inherit' });
-      console.log('');
-      console.log(chalk.gray('  ── Kubernetes (Kind) ──'));
-      spawnSync('kubectl', ['get', 'nodes'], { shell: true, stdio: 'inherit' });
-      console.log('');
-      spawnSync('kubectl', ['get', 'pods', '-n', 'default'], { shell: true, stdio: 'inherit' });
-      console.log('');
-      console.log(chalk.gray('  ── Clusters Kind ──'));
-      spawnSync('kind', ['get', 'clusters'], { shell: true, stdio: 'inherit' });
+      printStatus();
       divider();
       break;
     case 'exit':
