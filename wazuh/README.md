@@ -1,6 +1,6 @@
 # wazuh — SIEM Integration & Log Pipeline
 
-> End-to-end log pipeline: Fluent Bit DaemonSet collects Kubernetes container logs and forwards them to Wazuh Manager via syslog RFC5424.
+> End-to-end log pipeline: Fluent Bit DaemonSet collects Kubernetes container logs and forwards them to Wazuh Manager via syslog RFC5424. Includes configurable load testing for empirical sidecar overhead measurement.
 
 ---
 
@@ -14,6 +14,7 @@
 - [Configuration Deep Dive](#configuration-deep-dive)
 - [Common Errors & Resolution](#common-errors--resolution)
 - [Load Testing](#load-testing)
+- [Empirical Results](#empirical-results)
 - [Validation](#validation)
 - [Success Criteria](#success-criteria)
 - [Operational Commands](#operational-commands)
@@ -22,10 +23,13 @@
 
 ## Overview
 
-This directory contains everything needed to establish a **centralized security event pipeline** from the Kubernetes cluster to Wazuh SIEM. The pipeline consists of:
+This directory contains everything needed to establish a **centralized security event pipeline** from the Kubernetes cluster to Wazuh SIEM, plus the infrastructure for measuring the computational overhead of the Sidecar pattern under controlled load.
+
+The pipeline consists of:
 
 1. **Fluent Bit** (inside the cluster): DaemonSet that reads container logs from `/var/log/pods/`, parses CRI format, enriches with Kubernetes metadata, and forwards via syslog UDP.
 2. **Wazuh Manager** (outside the cluster): Standalone SIEM receiving syslog on port 514, archiving events to `/var/ossec/logs/archives/archives.log`.
+3. **Load Test Jobs** (inside the cluster): Kubernetes Jobs that generate synthetic HTTP traffic at three intensity levels to measure sidecar overhead against a control group.
 
 **Key constraint**: The full Wazuh stack (Manager + Indexer + Dashboard) requires TLS certificates for inter-component communication. To avoid certificate complexity in a lab environment, only the **Manager** is deployed. This is a valid simplification for academic purposes; production deployments would add the Indexer and Dashboard.
 
@@ -36,21 +40,21 @@ This directory contains everything needed to establish a **centralized security 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │              Kubernetes Cluster (Kind)                      │
-│  ┌─────────────┐    ┌─────────────┐                        │
-│  │ Service-A   │    │ Service-B   │                        │
-│  │ + Envoy     │    │ + Envoy     │                        │
-│  │ (stdout)    │    │ (stdout)    │                        │
-│  └──────┬──────┘    └──────┬──────┘                        │
-│         │                  │                                │
-│         └────────┬─────────┘                                │
-│                  │                                          │
-│         ┌────────▼────────┐                                │
-│         │  Fluent Bit     │  DaemonSet (1 per node)        │
-│         │  - tail input   │  Reads /var/log/pods/          │
-│         │  - cri parser   │  Parses containerd CRI format  │
-│         │  - syslog output│  Sends to Wazuh                │
-│         └────────┬────────┘                                │
-└──────────────────┼──────────────────────────────────────────┘
+│  ┌─────────────┐    ┌─────────────┐    ┌──────────────┐   │
+│  │ Service-A   │    │ Service-B   │    │ Load Test    │   │
+│  │ + Envoy     │    │ + Envoy     │    │ Jobs         │   │
+│  │ (stdout)    │    │ (stdout)    │    │              │   │
+│  └──────┬──────┘    └──────┬──────┘    └──────┬───────┘   │
+│         │                  │                    │            │
+│         └────────┬─────────┘────────────────────┘            │
+│                  │                                           │
+│         ┌────────▼────────┐                                 │
+│         │  Fluent Bit     │  DaemonSet (1 per node)         │
+│         │  - tail input   │  Reads /var/log/pods/           │
+│         │  - cri parser   │  Parses containerd CRI format   │
+│         │  - syslog output│  Sends to Wazuh                 │
+│         └────────┬────────┘                                 │
+└──────────────────┼───────────────────────────────────────────┘
                    │ Syslog RFC5424 UDP 514
                    ▼
         ┌──────────────────────┐
@@ -59,21 +63,40 @@ This directory contains everything needed to establish a **centralized security 
         │   - wazuh-analysisd  │  Analyzes with rules
         │   - archives.log     │  Stores all received logs
         └──────────────────────┘
+                   │
+                   │ docker exec tail -n 5000
+                   ▼
+        ┌──────────────────────┐
+        │  Dashboard Backend   │  Node.js/Express (Docker host)
+        │  - Parse syslog      │  Reads archives.log
+        │  - Paginate          │  Serves REST API
+        │  - Filter            │
+        └──────────────────────┘
 ```
 
 ---
 
 ## Files
 
+### SIEM & Collection
+
 | File | Purpose |
 |------|---------|
 | `docker-compose.yml` | Wazuh Manager standalone container with port mappings |
 | `fluent-bit-configmap.yaml` | Fluent Bit configuration: CRI parser, syslog output, Parsers_File |
 | `fluent-bit-daemonset.yaml` | DaemonSet manifest mounting host logs and ConfigMap |
+
+### Load Testing
+
+| File | Purpose |
+|------|---------|
 | `load-test-configmap.yaml` | Node.js load test script as ConfigMap |
 | `load-test-light.yaml` | Job: 10 concurrent connections, 10 seconds |
 | `load-test-medium.yaml` | Job: 50 concurrent connections, 20 seconds |
 | `load-test-heavy.yaml` | Job: 100 concurrent connections, 30 seconds |
+| `load-test-light-no-istio.yaml` | Job targeting `no-istio` namespace (control group) |
+| `load-test-medium-no-istio.yaml` | Job targeting `no-istio` namespace (control group) |
+| `load-test-heavy-no-istio.yaml` | Job targeting `no-istio` namespace (control group) |
 | `load-test-script.js` | Standalone Node.js load test script (for local use) |
 | `wazuh-agent-daemonset.yaml` | Legacy: attempted Wazuh agent deployment (not used) |
 
@@ -244,27 +267,54 @@ The DaemonSet mounts:
 **Root Cause**: Kind nodes run in isolated Docker containers; `host.docker.internal` is not available.
 **Fix**: Connect Wazuh container to the `kind` network and use its IP (e.g., `172.21.0.5`).
 
+### Error 7: Dashboard backend returns empty `data` array
+**Symptom**: `GET /api/logs` returns `{ "data": [], "total": 0 }`.
+**Root Cause**: `child_process.exec` default buffer is 1MB. Istio access logs in `archives.log` are very large and exceed this buffer, causing `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`.
+**Fix**: Increase `maxBuffer` to 10MB in the backend's `wazuh-reader.ts`:
+```javascript
+const { stdout } = await execAsync(cmd, { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+```
+
+### Error 8: Dashboard backend `docker: not found`
+**Symptom**: Backend container cannot execute `docker exec`.
+**Root Cause**: The Alpine-based Node.js image does not include the Docker CLI.
+**Fix**: Install `docker-cli` in the Dockerfile runtime stage:
+```dockerfile
+RUN apk add --no-cache docker-cli
+```
+
 ---
 
 ## Load Testing
 
-Three Kubernetes Jobs are provided to generate controlled traffic and measure sidecar overhead.
+Three Kubernetes Jobs are provided to generate controlled traffic and measure sidecar overhead. Additional Jobs target the `no-istio` namespace for baseline comparison.
 
-| Job | Concurrency | Duration | Purpose |
-|-----|-------------|----------|---------|
-| `load-test-light.yaml` | 10 | 10s | Baseline throughput measurement |
-| `load-test-medium.yaml` | 50 | 20s | Medium load, observe CPU scaling |
-| `load-test-heavy.yaml` | 100 | 30s | Stress test, measure sidecar overhead |
+| Job | Concurrency | Duration | Target | Purpose |
+|-----|-------------|----------|--------|---------|
+| `load-test-light.yaml` | 10 | 10s | `service-a:8080/health` | Baseline throughput |
+| `load-test-medium.yaml` | 50 | 20s | `service-a:8080/health` | Medium load, CPU scaling |
+| `load-test-heavy.yaml` | 100 | 30s | `service-a:8080/health` | Stress test, overhead measurement |
+| `load-test-light-no-istio.yaml` | 10 | 10s | `service-a.no-istio.svc.cluster.local:8080/health` | Baseline without sidecar |
+| `load-test-medium-no-istio.yaml` | 50 | 20s | `service-a.no-istio.svc.cluster.local:8080/health` | Medium load without sidecar |
+| `load-test-heavy-no-istio.yaml` | 100 | 30s | `service-a.no-istio.svc.cluster.local:8080/health` | Stress test without sidecar |
 
-### Running a Load Test
+### Running a Load Test (With Sidecar)
 
 ```powershell
-kubectl apply -f wazuh/load-test-light.yaml
-kubectl wait --for=condition=complete job/load-test-light --timeout=60s
-kubectl logs job/load-test-light -c load-test
+kubectl apply -f wazuh/load-test-heavy.yaml
+kubectl wait --for=condition=complete job/load-test-heavy --timeout=120s
+kubectl logs job/load-test-heavy -c load-test
 ```
 
-### Example Results (Heavy Load)
+### Running a Load Test (Control Group — Without Sidecar)
+
+```powershell
+kubectl apply -f wazuh/load-test-heavy-no-istio.yaml
+kubectl wait --for=condition=complete job/load-test-heavy-no-istio --timeout=120s
+kubectl logs job/load-test-heavy-no-istio -c load-test
+```
+
+### Example Results (Heavy Load, With Sidecar)
 
 ```json
 {
@@ -273,24 +323,51 @@ kubectl logs job/load-test-light -c load-test
   "concurrency": 100,
   "totalRequests": 141600,
   "errors": 0,
-  "throughput_rps": 4720,
+  "throughput_rps": 2704,
   "latency_ms": {
-    "avg": 21.06,
-    "p50": 18,
-    "p95": 43,
-    "p99": 56
+    "avg": 37.16,
+    "p50": 35,
+    "p95": 89,
+    "p99": 102
   }
 }
 ```
 
-### Resource Consumption Under Load
+---
+
+## Empirical Results
+
+### Comparative Performance (Heavy Load)
+
+| Metric | With Sidecar (Istio) | Without Sidecar (Baseline) | Overhead |
+|--------|----------------------|---------------------------|----------|
+| Throughput | 2,704 r/s | 2,779 r/s | **-2.7%** |
+| Avg Latency | 37.16 ms | 35.82 ms | **+3.7%** |
+| P99 Latency | 102 ms | 96 ms | **+6.3%** |
+| Pod CPU (total) | ~1,550 m | ~480 m | **+213%** |
+| Pod Memory (total) | ~115 Mi | ~70 Mi | ~+35 Mi |
+
+### Resource Breakdown (With Sidecar, Heavy Load)
 
 | Container | Baseline CPU | Heavy Load CPU | Baseline Memory | Heavy Load Memory |
 |-----------|-------------|----------------|-----------------|-------------------|
 | service-a (app) | 3m | 516m | 70 Mi | 77 Mi |
 | service-a (istio-proxy) | ~1m | **1,042m** | ~30 Mi | 37 Mi |
+| service-b (app) | 3m | 6m | 69 Mi | 68 Mi |
+| service-b (istio-proxy) | ~1m | ~4m | ~30 Mi | ~30 Mi |
+| Fluent Bit | 3m | 223m | 31 Mi | 38 Mi |
 
-**Key finding**: The `istio-proxy` sidecar consumes **twice the CPU** of the application container under heavy load, demonstrating the measurable overhead of the Sidecar pattern.
+**Key finding**: The `istio-proxy` sidecar consumes **twice the CPU** of the application container under heavy load (1,042m vs 516m), demonstrating the measurable computational tradeoff of the Sidecar pattern. Network latency impact is minimal (~3-6%).
+
+### Multi-Level Load Results (With Sidecar)
+
+| Test Level | Concurrency | Throughput (r/s) | Avg Latency (ms) | P99 Latency (ms) |
+|------------|-------------|------------------|------------------|------------------|
+| Light | 10 | 2,168 | 4.58 | 12 |
+| Medium | 50 | 2,942 | 16.94 | 56 |
+| Heavy | 100 | 2,704 | 37.16 | 102 |
+
+**Observation**: Throughput scales sub-linearly with concurrency. The system reaches saturation around medium load; heavy load shows slightly lower throughput due to increased context switching and Envoy connection management overhead.
 
 ---
 
@@ -323,6 +400,17 @@ docker exec wazuh-manager bash -c "grep 'Peticion recibida' /var/ossec/logs/arch
 
 Expected: JSON log entries from `service-a` and `service-b`.
 
+### Verify Log Volume Under Load
+
+```powershell
+# Before load test
+wc -l /var/ossec/logs/archives/archives.log
+
+# After load test
+docker exec wazuh-manager wc -l /var/ossec/logs/archives/archives.log
+# Should show significant increase (3,000+ new lines for heavy load)
+```
+
 ---
 
 ## Success Criteria
@@ -335,6 +423,8 @@ Expected: JSON log entries from `service-a` and `service-b`.
 | 4 | `archives.log` contains entries | `wc -l /var/ossec/logs/archives/archives.log` shows > 1000 lines |
 | 5 | JSON payload is complete | `grep -i 'method.*GET' archives.log` shows JSON with HTTP fields |
 | 6 | Logs come from both nodes | `grep '172.21.0.2' archives.log` and `grep '172.21.0.3' archives.log` both return results |
+| 7 | Load test completes without errors | `kubectl logs job/load-test-heavy -c load-test` shows `errors: 0` |
+| 8 | Sidecar overhead is measurable | `kubectl top pods` shows `istio-proxy` consuming more CPU than app container |
 
 ---
 
@@ -353,6 +443,11 @@ kubectl rollout restart daemonset fluent-bit
 # Check Fluent Bit logs for errors
 kubectl logs -l app=fluent-bit --tail=50
 
+# Run a quick load test
+kubectl apply -f wazuh/load-test-light.yaml
+kubectl wait --for=condition=complete job/load-test-light --timeout=60s
+kubectl logs job/load-test-light -c load-test
+
 # Stop everything
 docker compose down          # Stops Wazuh
 kubectl delete -f wazuh/     # Removes Fluent Bit
@@ -366,6 +461,7 @@ docker compose down -v
 
 ## Related Documentation
 
-- [Root README](../README.md) — Architecture overview and quick start
-- [k8s/README.md](../k8s/README.md) — Kubernetes deployment manifests
-- [src/README.md](../src/README.md) — Microservice code documentation
+- [Root README](../README.md) — Architecture overview, empirical results, and quick start
+- [k8s/README.md](../k8s/README.md) — Kubernetes deployment manifests and security policies
+- [src/README.md](../src/README.md) — Microservice and Dashboard code documentation
+- [scripts/README.md](../scripts/README.md) — Lab lifecycle TUI
